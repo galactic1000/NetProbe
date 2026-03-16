@@ -1,0 +1,31 @@
+# Secrets / local config
+.env
+
+# Virtual environments
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Test / tool cache
+.pytest_cache/
+.ruff_cache/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Editor
+.vscode/
+.idea/
+
+# Cache files
+.cache/
