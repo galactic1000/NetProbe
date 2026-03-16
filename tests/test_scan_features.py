@@ -1242,9 +1242,9 @@ def test_scan_port_uses_ipv6_sockaddr(mocker):
     assert seen["addr"] == ("::1", 80, 0, 0)
 
 
-async def test_scan_ports_udp_service_payload_clustered(mocker):
+async def test_scan_ports_udp_service_payload_clustered(mocker, monkeypatch):
     seen = {"thread": None, "async": None}
-    mocker.patch.dict(core.SERVICE_MAP, {53: "dns"})
+    monkeypatch.setitem(core.SERVICE_MAP, 53, "dns")
 
     def fake_udp_thread(target, port, timeout, af=socket.AF_INET, payload=b""):
         seen["thread"] = payload

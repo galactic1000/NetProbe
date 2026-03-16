@@ -356,10 +356,10 @@ def test_parse_cve_services_rejects_unknown():
         cli._parse_cve_services("http,not-a-service")
 
 
-def test_nvd_api_key_env_forwarded(mocker):
+def test_nvd_api_key_env_forwarded(mocker, monkeypatch):
     seen = {}
     mocker.patch.object(cli, "parse_ports", new=lambda *_: [80])
-    mocker.patch.dict("os.environ", {"NVD_API_KEY": "test-api-key"})
+    monkeypatch.setenv("NVD_API_KEY", "test-api-key")
     mocker.patch.object(cli, "run_scan", new=lambda *args, **kwargs: seen.update(kwargs))
     cli.main(["example.com"])
     assert seen["nvd_api_key"] == "test-api-key"

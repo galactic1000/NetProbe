@@ -280,9 +280,9 @@ class TestServicePatterns:
 # ---------------------------------------------------------------------------
 
 class TestActiveProbeRouting:
-    def test_identify_service_uses_ftp_probe(self, mocker):
+    def test_identify_service_uses_ftp_probe(self, mocker, monkeypatch):
         port = 2121
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "ftp"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "ftp")
         mocker.patch.object(fp, "ftp_probe", new=lambda *args, **kwargs: "220 FTP\r\n215 UNIX Type: L8\r\n")
         mocker.patch.object(fp, "grab_banner", new=lambda *args, **kwargs: "")
 
@@ -292,7 +292,7 @@ class TestActiveProbeRouting:
         assert pr.service == "ftp"
         assert "215" in pr.banner
 
-    def test_identify_service_smtp_probe_with_without_ssl(self, mocker):
+    def test_identify_service_smtp_probe_with_without_ssl(self, mocker, monkeypatch):
         calls = []
 
         def fake_smtp_probe(target, port, timeout, af, use_ssl):
@@ -301,11 +301,11 @@ class TestActiveProbeRouting:
 
         mocker.patch.object(fp, "smtp_probe", new=fake_smtp_probe)
 
-        mocker.patch.dict(scanner.SERVICE_MAP, {2525: "smtp"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, 2525, "smtp")
         pr_smtp = scanner.PortResult(port=2525, state="open")
         fp.identify_service("127.0.0.1", pr_smtp, 0.1)
 
-        mocker.patch.dict(scanner.SERVICE_MAP, {2465: "smtps"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, 2465, "smtps")
         pr_smtps = scanner.PortResult(port=2465, state="open")
         fp.identify_service("127.0.0.1", pr_smtps, 0.1)
 
@@ -519,7 +519,7 @@ class TestActiveProbeRouting:
         assert probes_smb._extract_smb2_dialect(resp) == "2.1"
 
 
-    def test_identify_service_routes_clustered(self, mocker):
+    def test_identify_service_routes_clustered(self, mocker, monkeypatch):
         calls = []
         routes = [
             ("ssh", "ssh_probe", 2222, "SSH-2.0-OpenSSH_9.3"),
@@ -543,15 +543,15 @@ class TestActiveProbeRouting:
                 probe_name,
                 new=(lambda svc, resp: (lambda *args, **kwargs: calls.append(svc) or resp))(service, response),
             )
-            mocker.patch.dict(scanner.SERVICE_MAP, {port: service})
+            monkeypatch.setitem(scanner.SERVICE_MAP, port, service)
 
         for service, _, port, _ in routes:
             fp.identify_service("127.0.0.1", scanner.PortResult(port=port, state="open"), 0.1)
             assert service in calls
 
-    def test_identify_service_dns_product_version_fingerprint(self, mocker):
+    def test_identify_service_dns_product_version_fingerprint(self, mocker, monkeypatch):
         port = 10530
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "dns"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "dns")
         mocker.patch.object(
             fp,
             "dns_probe",
@@ -562,9 +562,9 @@ class TestActiveProbeRouting:
         assert pr.service == "dns"
         assert pr.version == "Unbound 1.19.3"
 
-    def test_identify_service_dns_unknown_product_fingerprint(self, mocker):
+    def test_identify_service_dns_unknown_product_fingerprint(self, mocker, monkeypatch):
         port = 10531
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "dns"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "dns")
         mocker.patch.object(
             fp,
             "dns_probe",
@@ -575,27 +575,27 @@ class TestActiveProbeRouting:
         assert pr.service == "dns"
         assert pr.version == "DNS"
 
-    def test_identify_service_central_fallback_no_version(self, mocker):
+    def test_identify_service_central_fallback_no_version(self, mocker, monkeypatch):
         port = 2223
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "ssh"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "ssh")
         mocker.patch.object(fp, "ssh_probe", new=lambda *args, **kwargs: "SSH-2.0-OpenSSH")
         pr = scanner.PortResult(port=port, state="open")
         fp.identify_service("127.0.0.1", pr, 0.1)
         assert pr.service == "ssh"
         assert pr.version == "OpenSSH 2.0"
 
-    def test_identify_service_central_product_fallback_protocol(self, mocker):
+    def test_identify_service_central_product_fallback_protocol(self, mocker, monkeypatch):
         port = 1884
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "mqtt"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "mqtt")
         mocker.patch.object(fp, "mqtt_probe", new=lambda *args, **kwargs: "MQTT server ready")
         pr = scanner.PortResult(port=port, state="open")
         fp.identify_service("127.0.0.1", pr, 0.1)
         assert pr.service == "mqtt"
         assert pr.version == "MQTT"
 
-    def test_identify_service_mongodb_version_hello(self, mocker):
+    def test_identify_service_mongodb_version_hello(self, mocker, monkeypatch):
         port = 47018
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "mongodb"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "mongodb")
         mocker.patch.object(
             fp,
             "mongodb_probe",
@@ -606,9 +606,9 @@ class TestActiveProbeRouting:
         assert pr.service == "mongodb"
         assert pr.version == "MongoDB 7.0.8"
 
-    def test_identify_service_snmp_protocol_version(self, mocker):
+    def test_identify_service_snmp_protocol_version(self, mocker, monkeypatch):
         port = 10162
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "snmp"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "snmp")
         mocker.patch.object(
             fp,
             "snmp_probe",
@@ -619,9 +619,9 @@ class TestActiveProbeRouting:
         assert pr.service == "snmp"
         assert pr.version == "SNMP v2c"
 
-    def test_identify_service_ntp_protocol_version(self, mocker):
+    def test_identify_service_ntp_protocol_version(self, mocker, monkeypatch):
         port = 10123
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "ntp"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "ntp")
         mocker.patch.object(
             fp,
             "ntp_probe",
@@ -632,9 +632,9 @@ class TestActiveProbeRouting:
         assert pr.service == "ntp"
         assert pr.version == "NTP v4"
 
-    def test_identify_service_mssql_prelogin_version(self, mocker):
+    def test_identify_service_mssql_prelogin_version(self, mocker, monkeypatch):
         port = 41434
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "mssql"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "mssql")
         mocker.patch.object(
             fp,
             "mssql_probe",
@@ -645,9 +645,9 @@ class TestActiveProbeRouting:
         assert pr.service == "mssql"
         assert pr.version == "MSSQL 15.0.2000"
 
-    def test_identify_service_postgresql_auth_hint(self, mocker):
+    def test_identify_service_postgresql_auth_hint(self, mocker, monkeypatch):
         port = 55433
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "postgresql"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "postgresql")
         mocker.patch.object(
             fp,
             "postgresql_probe",
@@ -658,9 +658,9 @@ class TestActiveProbeRouting:
         assert pr.service == "postgresql"
         assert pr.version == "PostgreSQL auth=3"
 
-    def test_identify_service_oracle_tns_version(self, mocker):
+    def test_identify_service_oracle_tns_version(self, mocker, monkeypatch):
         port = 11521
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "oracle"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "oracle")
         mocker.patch.object(
             fp,
             "oracle_probe",
@@ -671,9 +671,9 @@ class TestActiveProbeRouting:
         assert pr.service == "oracle"
         assert pr.version == "Oracle TNS 19.0.0.0.0"
 
-    def test_identify_service_smb_version_label_no_banner(self, mocker):
+    def test_identify_service_smb_version_label_no_banner(self, mocker, monkeypatch):
         port = 44445
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "smb"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "smb")
         mocker.patch.object(fp, "smb_probe", new=lambda *args, **kwargs: "")
         mocker.patch.object(fp, "grab_banner", new=lambda *args, **kwargs: "")
         pr = scanner.PortResult(port=port, state="open")
@@ -681,36 +681,36 @@ class TestActiveProbeRouting:
         assert pr.service == "smb"
         assert pr.version == "SMB"
 
-    def test_identify_service_samba_product_smb(self, mocker):
+    def test_identify_service_samba_product_smb(self, mocker, monkeypatch):
         port = 44446
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "smb"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "smb")
         mocker.patch.object(fp, "smb_probe", new=lambda *args, **kwargs: "SMB 3.1.1 Samba 4.18.5")
         pr = scanner.PortResult(port=port, state="open")
         fp.identify_service("127.0.0.1", pr, 0.1)
         assert pr.service == "smb"
         assert pr.version == "Samba 4.18.5"
 
-    def test_identify_service_appends_protocol_version_no_number(self, mocker):
+    def test_identify_service_appends_protocol_version_no_number(self, mocker, monkeypatch):
         port = 2224
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "ssh"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "ssh")
         mocker.patch.object(fp, "ssh_probe", new=lambda *args, **kwargs: "SSH-2.0-OpenSSH")
         pr = scanner.PortResult(port=port, state="open")
         fp.identify_service("127.0.0.1", pr, 0.1)
         assert pr.service == "ssh"
         assert pr.version == "OpenSSH 2.0"
 
-    def test_identify_service_fallback_service_protocol_number(self, mocker):
+    def test_identify_service_fallback_service_protocol_number(self, mocker, monkeypatch):
         port = 18080
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "http"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "http")
         mocker.patch.object(fp, "http_probe", new=lambda *args, **kwargs: "HTTP/1.1 200 OK\r\nServer: test\r\n\r\n")
         pr = scanner.PortResult(port=port, state="open")
         fp.identify_service("127.0.0.1", pr, 0.1)
         assert pr.service == "http"
         assert pr.version == "HTTP 1.1"
 
-    def test_identify_service_ldap_protocol_version(self, mocker):
+    def test_identify_service_ldap_protocol_version(self, mocker, monkeypatch):
         port = 40390
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "ldap"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "ldap")
         mocker.patch.object(
             fp,
             "ldap_probe",
@@ -721,18 +721,18 @@ class TestActiveProbeRouting:
         assert pr.service == "ldap"
         assert pr.version == "LDAP 3"
 
-    def test_identify_service_dovecot_imap(self, mocker):
+    def test_identify_service_dovecot_imap(self, mocker, monkeypatch):
         port = 40391
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "imap"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "imap")
         mocker.patch.object(fp, "imap_probe", new=lambda *args, **kwargs: "* OK Dovecot ready. 2.3.18")
         pr = scanner.PortResult(port=port, state="open")
         fp.identify_service("127.0.0.1", pr, 0.1)
         assert pr.service == "imap"
         assert pr.version.startswith("Dovecot")
 
-    def test_identify_service_winrm_httpapi_version(self, mocker):
+    def test_identify_service_winrm_httpapi_version(self, mocker, monkeypatch):
         port = 45986
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "winrm"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "winrm")
         mocker.patch.object(
             fp,
             "winrm_probe",
@@ -743,9 +743,9 @@ class TestActiveProbeRouting:
         assert pr.service == "winrm"
         assert pr.version == "WinRM"
 
-    def test_identify_service_ignores_wsman_winrm(self, mocker):
+    def test_identify_service_ignores_wsman_winrm(self, mocker, monkeypatch):
         port = 45987
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "winrm"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "winrm")
         mocker.patch.object(
             fp,
             "winrm_probe",
@@ -756,9 +756,9 @@ class TestActiveProbeRouting:
         assert pr.service == "winrm"
         assert pr.version == "WinRM"
 
-    def test_identify_service_explicit_winrm_version_token(self, mocker):
+    def test_identify_service_explicit_winrm_version_token(self, mocker, monkeypatch):
         port = 45988
-        mocker.patch.dict(scanner.SERVICE_MAP, {port: "winrm"})
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, "winrm")
         mocker.patch.object(
             fp,
             "winrm_probe",
