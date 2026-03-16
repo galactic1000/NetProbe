@@ -182,10 +182,6 @@ With `-o` and multiple targets:
 - `individual`: one report per target
 - `both`: merged report + per-target reports
 
-## Legal
-
-Use NetProbe only on systems you own or are explicitly authorized to test.
-
 ## Testing
 
 Dependencies are only required for test/development workflows:
@@ -205,3 +201,7 @@ pytest -q
 - UDP scanning is probabilistic (`open|filtered` is expected in some cases).
 - SYN scanning behavior depends on OS privileges and path/network behavior.
 - Service and version detection are best-effort and depend on remote responses.
+
+## Disclaimer
+
+Use NetProbe only on systems you own or are explicitly authorized to test.
