@@ -1,5 +1,7 @@
 ﻿import socket
 
+import pytest
+
 import netprobe.fingerprint as fp
 import netprobe.protocol_plugins.builtin as pb
 from netprobe.models import PortResult
@@ -16,15 +18,10 @@ def test_register_protocol_probe_override():
     assert "HTTP/1.1" in pr.banner
 
 
-def test_list_protocol_probes_common_services():
+@pytest.mark.parametrize("expected_service", ["http", "ssh", "redis", "memcached", "mqtt", "amqp", "vnc"])
+def test_list_protocol_probes_common_services(expected_service):
     services = fp.list_protocol_probes()
-    assert "http" in services
-    assert "ssh" in services
-    assert "redis" in services
-    assert "memcached" in services
-    assert "mqtt" in services
-    assert "amqp" in services
-    assert "vnc" in services
+    assert expected_service in services
 
 
 def test_grab_banner_uses_ipv6_sockaddr(mocker):
@@ -46,14 +43,14 @@ def test_grab_banner_uses_ipv6_sockaddr(mocker):
         def recv(self, _):
             return b"banner"
 
-    mocker.patch.object(fp.builtins.socket, "socket", new=lambda *args, **kwargs: FakeSock())
+    mocker.patch.object(fp.builtins.socket, "socket", return_value=FakeSock())
     banner = fp.grab_banner("::1", 22, 0.1, af=socket.AF_INET6)
     assert "banner" in banner
     assert seen["addr"] == ("::1", 22, 0, 0)
 
 
 def test_identify_service_infers_redis_banner(mocker):
-    mocker.patch.object(fp, "grab_banner", new=lambda *args, **kwargs: "redis_version:7.2.4\r\nrole:master")
+    mocker.patch.object(fp, "grab_banner", return_value="redis_version:7.2.4\r\nrole:master")
     pr = PortResult(port=65000, state="open")
     fp.identify_service("127.0.0.1", pr, 0.1)
     assert pr.service == "redis"

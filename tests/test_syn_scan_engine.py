@@ -1,6 +1,8 @@
 import socket
 import struct
 
+import pytest
+
 import netprobe.scanner.engines as engines
 
 
@@ -186,9 +188,9 @@ def test_syn_scan_port_sends_rst_on_synack(mocker):
     send_sock = _FakeSendSock()
     recv_sock = _FakeRecvSock([(pkt, (target_ip, 0))])
     sockets = [send_sock, recv_sock]
-    mocker.patch.object(engines.socket, "socket", new=lambda *args, **kwargs: sockets.pop(0))
+    mocker.patch.object(engines.socket, "socket", side_effect=sockets)
     randint_vals = iter([src_port, seq])
-    mocker.patch.object(engines.random, "randint", new=lambda _a, _b: next(randint_vals))
+    mocker.patch.object(engines.random, "randint", side_effect=randint_vals)
 
     result = engines.syn_scan_port(target_ip, target_port, timeout=0.2, src_ip=src_ip, af=socket.AF_INET)
 
@@ -207,157 +209,81 @@ def test_syn_scan_port_sends_rst_on_synack(mocker):
     assert rst_ack == peer_seq + 1
 
 
-def test_syn_scan_port_ignores_synack_with_wrong_ack(mocker):
-    target_ip = "203.0.113.11"
-    src_ip = "192.0.2.21"
-    target_port = 22
-    src_port = 41000
-    seq = 12345
-
-    bad_pkt = _build_ipv4_tcp_packet(
-        src_ip=target_ip,
-        dst_ip=src_ip,
-        src_port=target_port,
-        dst_port=src_port,
-        seq=777,
-        ack=seq + 2,  # invalid ACK for our SYN
-        flags=0x12,
-    )
-    send_sock = _FakeSendSock()
-    recv_sock = _FakeRecvSock([(bad_pkt, (target_ip, 0))])
-    sockets = [send_sock, recv_sock]
-    mocker.patch.object(engines.socket, "socket", new=lambda *args, **kwargs: sockets.pop(0))
-    randint_vals = iter([src_port, seq])
-    mocker.patch.object(engines.random, "randint", new=lambda _a, _b: next(randint_vals))
-
-    result = engines.syn_scan_port(target_ip, target_port, timeout=0.05, src_ip=src_ip, af=socket.AF_INET)
-
-    assert result is None
-    # Only initial SYN should be sent; no cleanup RST for invalid response.
-    assert len(send_sock.sent) == 1
-    assert send_sock.sent[0][0][13] == 0x02
-
-
-def test_syn_scan_port_ipv4_header_options(mocker):
-    target_ip = "203.0.113.12"
-    src_ip = "192.0.2.22"
-    target_port = 8080
-    src_port = 42000
-    seq = 3333
-    peer_seq = 8888
-
+@pytest.mark.parametrize("target_ip,src_ip,target_port,src_port,seq,pkt_builder_kwargs,af,from_addr", [
+    (
+        "203.0.113.11", "192.0.2.21", 22, 41000, 12345,
+        {"seq": 777, "ack_offset": 2, "flags": 0x12},
+        socket.AF_INET, lambda tip: (tip, 0),
+    ),
+    (
+        "203.0.113.13", "192.0.2.23", 8443, 43000, 4444,
+        {"seq": 9999, "ack_offset": 1, "flags": 0x12, "flags_fragment": 0x2000},
+        socket.AF_INET, lambda tip: (tip, 0),
+    ),
+    (
+        "203.0.113.14", "192.0.2.24", 443, 45000, 9876,
+        {"seq": 1234, "ack_offset": 1, "flags": 0x13},
+        socket.AF_INET, lambda tip: (tip, 0),
+    ),
+], ids=["wrong_ack", "fragmented", "extra_flags"])
+def test_syn_scan_port_ignored_replies(mocker, target_ip, src_ip, target_port, src_port, seq, pkt_builder_kwargs, af, from_addr):
     pkt = _build_ipv4_tcp_packet(
         src_ip=target_ip,
         dst_ip=src_ip,
         src_port=target_port,
         dst_port=src_port,
-        seq=peer_seq,
-        ack=seq + 1,
-        flags=0x12,
-        ihl_words=6,
+        seq=pkt_builder_kwargs["seq"],
+        ack=seq + pkt_builder_kwargs["ack_offset"],
+        flags=pkt_builder_kwargs["flags"],
+        flags_fragment=pkt_builder_kwargs.get("flags_fragment", 0),
     )
     send_sock = _FakeSendSock()
-    recv_sock = _FakeRecvSock([(pkt, (target_ip, 0))])
-    sockets = [send_sock, recv_sock]
-    mocker.patch.object(engines.socket, "socket", new=lambda *args, **kwargs: sockets.pop(0))
-    randint_vals = iter([src_port, seq])
-    mocker.patch.object(engines.random, "randint", new=lambda _a, _b: next(randint_vals))
+    recv_sock = _FakeRecvSock([(pkt, from_addr(target_ip))])
+    mocker.patch.object(engines.socket, "socket", side_effect=[send_sock, recv_sock])
+    mocker.patch.object(engines.random, "randint", side_effect=iter([src_port, seq]))
 
-    result = engines.syn_scan_port(target_ip, target_port, timeout=0.2, src_ip=src_ip, af=socket.AF_INET)
-
-    assert result is not None
-    assert result.state == "open"
-    assert len(send_sock.sent) == 2
-
-
-def test_syn_scan_port_ignores_fragmented_ipv4_reply(mocker):
-    target_ip = "203.0.113.13"
-    src_ip = "192.0.2.23"
-    target_port = 8443
-    src_port = 43000
-    seq = 4444
-
-    pkt = _build_ipv4_tcp_packet(
-        src_ip=target_ip,
-        dst_ip=src_ip,
-        src_port=target_port,
-        dst_port=src_port,
-        seq=9999,
-        ack=seq + 1,
-        flags=0x12,
-        flags_fragment=0x2000,  # MF bit set
-    )
-    send_sock = _FakeSendSock()
-    recv_sock = _FakeRecvSock([(pkt, (target_ip, 0))])
-    sockets = [send_sock, recv_sock]
-    mocker.patch.object(engines.socket, "socket", new=lambda *args, **kwargs: sockets.pop(0))
-    randint_vals = iter([src_port, seq])
-    mocker.patch.object(engines.random, "randint", new=lambda _a, _b: next(randint_vals))
-
-    result = engines.syn_scan_port(target_ip, target_port, timeout=0.05, src_ip=src_ip, af=socket.AF_INET)
+    result = engines.syn_scan_port(target_ip, target_port, timeout=0.05, src_ip=src_ip, af=af)
 
     assert result is None
     assert len(send_sock.sent) == 1
     assert send_sock.sent[0][0][13] == 0x02
 
 
-def test_syn_scan_port_ipv6_hop_by_hop_extension(mocker):
-    target_ip = "2001:db8::10"
-    src_ip = "2001:db8::20"
-    target_port = 443
-    src_port = 44000
-    seq = 7777
-    peer_seq = 123456
-
-    pkt = _build_ipv6_tcp_packet(
-        src_ip=target_ip,
-        dst_ip=src_ip,
-        src_port=target_port,
-        dst_port=src_port,
-        seq=peer_seq,
-        ack=seq + 1,
-        flags=0x12,
-        with_hop_by_hop=True,
-    )
+@pytest.mark.parametrize("target_ip,src_ip,target_port,src_port,seq,peer_seq,pkt_factory,af,from_addr_fn", [
+    (
+        "203.0.113.10", "192.0.2.20", 443, 40000, 1000, 900000,
+        lambda tip, sip, tp, sp, pseq, seq: _build_ipv4_tcp_packet(
+            src_ip=tip, dst_ip=sip, src_port=tp, dst_port=sp,
+            seq=pseq, ack=seq + 1, flags=0x12,
+        ),
+        socket.AF_INET, lambda tip: (tip, 0),
+    ),
+    (
+        "203.0.113.12", "192.0.2.22", 8080, 42000, 3333, 8888,
+        lambda tip, sip, tp, sp, pseq, seq: _build_ipv4_tcp_packet(
+            src_ip=tip, dst_ip=sip, src_port=tp, dst_port=sp,
+            seq=pseq, ack=seq + 1, flags=0x12, ihl_words=6,
+        ),
+        socket.AF_INET, lambda tip: (tip, 0),
+    ),
+    (
+        "2001:db8::10", "2001:db8::20", 443, 44000, 7777, 123456,
+        lambda tip, sip, tp, sp, pseq, seq: _build_ipv6_tcp_packet(
+            src_ip=tip, dst_ip=sip, src_port=tp, dst_port=sp,
+            seq=pseq, ack=seq + 1, flags=0x12, with_hop_by_hop=True,
+        ),
+        socket.AF_INET6, lambda tip: (tip, 0, 0, 0),
+    ),
+], ids=["ipv4_standard", "ipv4_with_options", "ipv6_hop_by_hop"])
+def test_syn_scan_port_open_replies(mocker, target_ip, src_ip, target_port, src_port, seq, peer_seq, pkt_factory, af, from_addr_fn):
+    pkt = pkt_factory(target_ip, src_ip, target_port, src_port, peer_seq, seq)
     send_sock = _FakeSendSock()
-    recv_sock = _FakeRecvSock([(pkt, (target_ip, 0, 0, 0))])
-    sockets = [send_sock, recv_sock]
-    mocker.patch.object(engines.socket, "socket", new=lambda *args, **kwargs: sockets.pop(0))
-    randint_vals = iter([src_port, seq])
-    mocker.patch.object(engines.random, "randint", new=lambda _a, _b: next(randint_vals))
+    recv_sock = _FakeRecvSock([(pkt, from_addr_fn(target_ip))])
+    mocker.patch.object(engines.socket, "socket", side_effect=[send_sock, recv_sock])
+    mocker.patch.object(engines.random, "randint", side_effect=iter([src_port, seq]))
 
-    result = engines.syn_scan_port(target_ip, target_port, timeout=0.2, src_ip=src_ip, af=socket.AF_INET6)
+    result = engines.syn_scan_port(target_ip, target_port, timeout=0.2, src_ip=src_ip, af=af)
 
     assert result is not None
     assert result.state == "open"
     assert len(send_sock.sent) == 2
-
-
-def test_syn_scan_port_ignores_synack_with_extra_flags(mocker):
-    target_ip = "203.0.113.14"
-    src_ip = "192.0.2.24"
-    target_port = 443
-    src_port = 45000
-    seq = 9876
-
-    # SYN+ACK+FIN (0x13) should be ignored by strict flag validation.
-    pkt = _build_ipv4_tcp_packet(
-        src_ip=target_ip,
-        dst_ip=src_ip,
-        src_port=target_port,
-        dst_port=src_port,
-        seq=1234,
-        ack=seq + 1,
-        flags=0x13,
-    )
-    send_sock = _FakeSendSock()
-    recv_sock = _FakeRecvSock([(pkt, (target_ip, 0))])
-    sockets = [send_sock, recv_sock]
-    mocker.patch.object(engines.socket, "socket", new=lambda *args, **kwargs: sockets.pop(0))
-    randint_vals = iter([src_port, seq])
-    mocker.patch.object(engines.random, "randint", new=lambda _a, _b: next(randint_vals))
-
-    result = engines.syn_scan_port(target_ip, target_port, timeout=0.05, src_ip=src_ip, af=socket.AF_INET)
-
-    assert result is None
-    assert len(send_sock.sent) == 1

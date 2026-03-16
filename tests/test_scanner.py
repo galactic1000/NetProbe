@@ -1,4 +1,4 @@
-﻿"""
+"""
 Unit tests for NetProbe scanner.
 Run with: pytest tests -v
 """
@@ -19,22 +19,21 @@ import netprobe.vuln_checks as vc
 # ---------------------------------------------------------------------------
 
 class TestParsePorts:
-    def test_valid_cases_clustered(self):
-        cases = [
-            ("common", scanner.COMMON_PORTS),
-            ("80", [80]),
-            ("22,80,443", [22, 80, 443]),
-            ("20-22", [20, 21, 22]),
-            ("22,80-82,443", [22, 80, 81, 82, 443]),
-            ("80,80,80", [80]),
-        ]
-        for spec, expected in cases:
-            assert scanner.parse_ports(spec) == expected, f"failed for {spec!r}"
+    @pytest.mark.parametrize("spec,expected", [
+        ("common", scanner.COMMON_PORTS),
+        ("80", [80]),
+        ("22,80,443", [22, 80, 443]),
+        ("20-22", [20, 21, 22]),
+        ("22,80-82,443", [22, 80, 81, 82, 443]),
+        ("80,80,80", [80]),
+    ])
+    def test_valid_cases(self, spec, expected):
+        assert scanner.parse_ports(spec) == expected
 
-    def test_invalid_cases_clustered(self):
-        for spec in ("abc", "0", "65536", "100-80", ""):
-            with pytest.raises(scanner.PortSpecError):
-                scanner.parse_ports(spec)
+    @pytest.mark.parametrize("spec", ["abc", "0", "65536", "100-80", ""])
+    def test_invalid_cases(self, spec):
+        with pytest.raises(scanner.PortSpecError):
+            scanner.parse_ports(spec)
 
 
 # ---------------------------------------------------------------------------
@@ -42,10 +41,12 @@ class TestParsePorts:
 # ---------------------------------------------------------------------------
 
 class TestResolveTargetValidation:
-    def test_rejects_invalid_target_inputs_clustered(self):
-        for target in ("", "   ", "http://example.com", "https://example.com/path", "some/path"):
-            with pytest.raises(scanner.TargetResolutionError):
-                scanner.resolve_target(target)
+    @pytest.mark.parametrize("target", [
+        "", "   ", "http://example.com", "https://example.com/path", "some/path"
+    ])
+    def test_rejects_invalid_target_inputs(self, target):
+        with pytest.raises(scanner.TargetResolutionError):
+            scanner.resolve_target(target)
 
 
 # ---------------------------------------------------------------------------
@@ -59,88 +60,66 @@ class TestCheckBannerVulns:
         pr.version = version
         return pr
 
-    def test_detects_expected_signatures_clustered(self):
-        cases = [
-            ("220 vsftpd 2.3.4", lambda v: any("2.3.4" in x.title or "Backdoor" in x.title for x in v), "CRITICAL"),
-            ("SSH-2.0-OpenSSH_7.0", lambda v: any("OpenSSH" in x.title for x in v), "HIGH"),
-            ("REDIS 0 server\r\nredis_version:6.0.0", lambda v: any("Redis" in x.title for x in v), None),
-        ]
-        for banner, predicate, expected_sev in cases:
-            vulns = scanner.check_banner_vulns(self._make_port_result(banner=banner))
-            assert predicate(vulns), f"expected signature missing for banner {banner!r}"
-            if expected_sev:
-                assert any(v.severity == expected_sev for v in vulns), f"missing severity {expected_sev}"
+    @pytest.mark.parametrize("banner,predicate,expected_sev", [
+        ("220 vsftpd 2.3.4", lambda v: any("2.3.4" in x.title or "Backdoor" in x.title for x in v), "CRITICAL"),
+        ("SSH-2.0-OpenSSH_7.0", lambda v: any("OpenSSH" in x.title for x in v), "HIGH"),
+        ("REDIS 0 server\r\nredis_version:6.0.0", lambda v: any("Redis" in x.title for x in v), None),
+    ])
+    def test_detects_expected_signatures(self, banner, predicate, expected_sev):
+        vulns = scanner.check_banner_vulns(self._make_port_result(banner=banner))
+        assert predicate(vulns), f"expected signature missing for banner {banner!r}"
+        if expected_sev:
+            assert any(v.severity == expected_sev for v in vulns), f"missing severity {expected_sev}"
 
     def test_no_false_positives_clustered(self):
         for pr in (self._make_port_result(banner="SSH-2.0-OpenSSH_8.9p1"), self._make_port_result()):
             assert scanner.check_banner_vulns(pr) == []
 
 
+@pytest.mark.parametrize("port,service,version,banner,expected_severity,expected_finding_type", [
+    (22, "ssh", "OpenSSH 7.0", None, "HIGH", "vulnerability"),
+    (3306, "mysql", "MySQL 7.1", None, "MEDIUM", "vulnerability"),
+    (80, "http", "nginx 1.20.0", "Server: nginx/1.20.0", "MEDIUM", "advisory"),
+])
+def test_outdated_service_flagged(port, service, version, banner, expected_severity, expected_finding_type):
+    kwargs = dict(port=port, state="open", protocol="tcp", service=service, version=version)
+    if banner is not None:
+        kwargs["banner"] = banner
+    pr = scanner.PortResult(**kwargs)
+    v = scanner.check_outdated_service(pr)
+    assert v is not None
+    assert v.severity == expected_severity
+    assert v.finding_type == expected_finding_type
+
+
+@pytest.mark.parametrize("port,service,version,banner", [
+    (22, "ssh", "OpenSSH 9.6", None),
+    (22, "ssh", None, "SSH-2.0-OpenSSH_9.3p1 Debian-3"),
+    (445, "smb", "Asambax 4.10.0", "SMB 3.1.1 Asambax 4.10.0"),
+])
+def test_outdated_service_not_flagged(port, service, version, banner):
+    kwargs = dict(port=port, state="open", protocol="tcp", service=service)
+    if version is not None:
+        kwargs["version"] = version
+    if banner is not None:
+        kwargs["banner"] = banner
+    pr = scanner.PortResult(**kwargs)
+    assert scanner.check_outdated_service(pr) is None
+
+
 class TestOutdatedServiceVersion:
-    def test_outdated_service_is_high_vulnerability(self):
-        pr = scanner.PortResult(port=22, state="open", protocol="tcp", service="ssh", version="OpenSSH 7.0")
+    @pytest.mark.parametrize("version,banner,expected_title_prefix", [
+        ("OpenSSH 7.0", None, "Outdated OpenSSH Version"),
+        ("OpenSSH 6.6.1p1", "SSH-2.0-OpenSSH_6.6.1p1 Debian-3", "Outdated OpenSSH Version"),
+    ])
+    def test_outdated_title_includes_service_name(self, version, banner, expected_title_prefix):
+        kwargs = dict(port=22, state="open", protocol="tcp", service="ssh", version=version)
+        if banner is not None:
+            kwargs["banner"] = banner
+        pr = scanner.PortResult(**kwargs)
         v = scanner.check_outdated_service(pr)
         assert v is not None
-        assert v.severity == "HIGH"
-        assert v.finding_type == "vulnerability"
-        assert "High Vulnerability" in v.title
-
-    def test_outdated_service_is_medium_vulnerability(self):
-        pr = scanner.PortResult(port=3306, state="open", protocol="tcp", service="mysql", version="MySQL 7.1")
-        v = scanner.check_outdated_service(pr)
-        assert v is not None
-        assert v.severity == "MEDIUM"
-        assert v.finding_type == "vulnerability"
-        assert "Medium Vulnerability" in v.title
-
-    def test_outdated_service_is_medium_advisory(self):
-        pr = scanner.PortResult(
-            port=80,
-            state="open",
-            protocol="tcp",
-            service="http",
-            version="nginx 1.20.0",
-            banner="Server: nginx/1.20.0",
-        )
-        v = scanner.check_outdated_service(pr)
-        assert v is not None
-        assert v.severity == "MEDIUM"
-        assert v.finding_type == "advisory"
-        assert "Medium Advisory" in v.title
-
-    def test_modern_service_not_flagged(self):
-        pr = scanner.PortResult(port=22, state="open", protocol="tcp", service="ssh", version="OpenSSH 9.6")
-        assert scanner.check_outdated_service(pr) is None
-
-    def test_ssh_protocol_version_no_false_outdated(self):
-        pr = scanner.PortResult(
-            port=22,
-            state="open",
-            protocol="tcp",
-            service="ssh",
-            banner="SSH-2.0-OpenSSH_9.3p1 Debian-3",
-        )
-        assert scanner.check_outdated_service(pr) is None
-
-    def test_outdated_title_includes_service_name(self):
-        pr = scanner.PortResult(port=22, state="open", protocol="tcp", service="ssh", version="OpenSSH 7.0")
-        v = scanner.check_outdated_service(pr)
-        assert v is not None
-        assert v.title.startswith("Outdated OpenSSH Version")
-        assert "Detected OpenSSH version appears outdated." in v.description
-
-    def test_outdated_product_avoids_protocol_prefix(self):
-        pr = scanner.PortResult(
-            port=22,
-            state="open",
-            protocol="tcp",
-            service="ssh",
-            version="OpenSSH 6.6.1p1",
-            banner="SSH-2.0-OpenSSH_6.6.1p1 Debian-3",
-        )
-        v = scanner.check_outdated_service(pr)
-        assert v is not None
-        assert v.title.startswith("Outdated OpenSSH Version")
+        assert v.title.startswith(expected_title_prefix)
         assert "Detected OpenSSH version appears outdated." in v.description
 
     def test_service_product_rule_overrides_generic(self):
@@ -166,18 +145,6 @@ class TestOutdatedServiceVersion:
         v = scanner.check_outdated_service(pr)
         assert v is not None
         assert v.title.startswith("Outdated Samba Version")
-
-    def test_samba_product_rule_uses_word_boundary(self):
-        pr = scanner.PortResult(
-            port=445,
-            state="open",
-            protocol="tcp",
-            service="smb",
-            version="Asambax 4.10.0",
-            banner="SMB 3.1.1 Asambax 4.10.0",
-        )
-        # Should not match samba-specific product rule by substring.
-        assert scanner.check_outdated_service(pr) is None
 
 
 # ---------------------------------------------------------------------------
@@ -218,15 +185,17 @@ class TestUdpVulnChecks:
 
 
 class TestSmbVulnChecks:
-    def test_smb_exposure_flagged(self):
-        pr = scanner.PortResult(port=445, state="open", protocol="tcp", service="smb", banner="SMB2/3")
+    @pytest.mark.parametrize("banner,expected_title,expected_severity", [
+        ("SMB2/3", "SMB Service Exposed", None),
+        ("SMB1 NT LM 0.12", "SMBv1 Detected", "CRITICAL"),
+    ])
+    def test_smb_vuln_checks(self, banner, expected_title, expected_severity):
+        pr = scanner.PortResult(port=445, state="open", protocol="tcp", service="smb", banner=banner)
         vulns = scanner.run_vuln_checks("127.0.0.1", pr, 0.1, cve_entries=[])
-        assert any(v.title == "SMB Service Exposed" for v in vulns)
-
-    def test_smbv1_flagged_critical(self):
-        pr = scanner.PortResult(port=445, state="open", protocol="tcp", service="smb", banner="SMB1 NT LM 0.12")
-        vulns = scanner.run_vuln_checks("127.0.0.1", pr, 0.1, cve_entries=[])
-        assert any(v.title == "SMBv1 Detected" and v.severity == "CRITICAL" for v in vulns)
+        if expected_severity is not None:
+            assert any(v.title == expected_title and v.severity == expected_severity for v in vulns)
+        else:
+            assert any(v.title == expected_title for v in vulns)
 
 
 # ---------------------------------------------------------------------------
@@ -234,11 +203,16 @@ class TestSmbVulnChecks:
 # ---------------------------------------------------------------------------
 
 class TestSeverityOrder:
-    def test_severity_order_clustered(self):
-        assert scanner.SEVERITY_ORDER["CRITICAL"] < scanner.SEVERITY_ORDER["HIGH"]
-        assert scanner.SEVERITY_ORDER["HIGH"] < scanner.SEVERITY_ORDER["MEDIUM"]
-        assert scanner.SEVERITY_ORDER["MEDIUM"] < scanner.SEVERITY_ORDER["LOW"]
-        assert scanner.SEVERITY_ORDER.get("UNKNOWN", 99) == 99
+    @pytest.mark.parametrize("higher,lower", [
+        ("CRITICAL", "HIGH"),
+        ("HIGH", "MEDIUM"),
+        ("MEDIUM", "LOW"),
+        ("LOW", "UNKNOWN"),
+    ])
+    def test_severity_order_clustered(self, higher, lower):
+        higher_val = scanner.SEVERITY_ORDER[higher] if higher in scanner.SEVERITY_ORDER else scanner.SEVERITY_ORDER.get(higher, 99)
+        lower_val = scanner.SEVERITY_ORDER[lower] if lower in scanner.SEVERITY_ORDER else scanner.SEVERITY_ORDER.get(lower, 99)
+        assert higher_val < lower_val
 
 
 # ---------------------------------------------------------------------------
@@ -257,20 +231,21 @@ class TestServicePatterns:
                 return svc_name, version
         return None, None
 
-    def test_service_pattern_smoke_clustered(self):
-        cases = [
-            ("SSH-2.0-OpenSSH_8.9p1", "ssh", "OpenSSH"),
-            ("220 vsftpd 3.0.5", "ftp", "3.0.5"),
-            ("Server: Apache/2.4.54 (Debian)", "http", "2.4.54"),
-            ("Server: nginx/1.22.0", "http", "1.22.0"),
-            ("Server: Caddy/2.8.4", "http", "2.8.4"),
-            ("HTTP/1.1 200 OK\r\nX-Powered-By: Express\r\n\r\n", "http", "Express"),
-            ("HTTP/1.1 500\r\nX-Application-Context: app:prod,spring\r\n\r\n", "http", "Spring Boot"),
-        ]
-        for banner, expected_svc, expected_ver_fragment in cases:
-            svc, ver = self._match(banner)
-            assert svc == expected_svc
-            assert expected_ver_fragment in ver
+    @pytest.mark.parametrize("banner,expected_svc,expected_ver_fragment", [
+        ("SSH-2.0-OpenSSH_8.9p1", "ssh", "OpenSSH"),
+        ("220 vsftpd 3.0.5", "ftp", "3.0.5"),
+        ("Server: Apache/2.4.54 (Debian)", "http", "2.4.54"),
+        ("Server: nginx/1.22.0", "http", "1.22.0"),
+        ("Server: Caddy/2.8.4", "http", "2.8.4"),
+        ("HTTP/1.1 200 OK\r\nX-Powered-By: Express\r\n\r\n", "http", "Express"),
+        ("HTTP/1.1 500\r\nX-Application-Context: app:prod,spring\r\n\r\n", "http", "Spring Boot"),
+    ])
+    def test_service_pattern_smoke(self, banner, expected_svc, expected_ver_fragment):
+        svc, ver = self._match(banner)
+        assert svc == expected_svc
+        assert expected_ver_fragment in ver
+
+    def test_service_pattern_unknown_no_match(self):
         svc, ver = self._match("220 Some Unknown FTP Server")
         assert svc is None
 
@@ -283,8 +258,8 @@ class TestActiveProbeRouting:
     def test_identify_service_uses_ftp_probe(self, mocker, monkeypatch):
         port = 2121
         monkeypatch.setitem(scanner.SERVICE_MAP, port, "ftp")
-        mocker.patch.object(fp, "ftp_probe", new=lambda *args, **kwargs: "220 FTP\r\n215 UNIX Type: L8\r\n")
-        mocker.patch.object(fp, "grab_banner", new=lambda *args, **kwargs: "")
+        mocker.patch.object(fp, "ftp_probe", return_value="220 FTP\r\n215 UNIX Type: L8\r\n")
+        mocker.patch.object(fp, "grab_banner", return_value="")
 
         pr = scanner.PortResult(port=port, state="open")
         fp.identify_service("127.0.0.1", pr, 0.1)
@@ -293,13 +268,9 @@ class TestActiveProbeRouting:
         assert "215" in pr.banner
 
     def test_identify_service_smtp_probe_with_without_ssl(self, mocker, monkeypatch):
-        calls = []
-
-        def fake_smtp_probe(target, port, timeout, af, use_ssl):
-            calls.append((port, use_ssl))
-            return "220 mail.example ESMTP\r\n250-Hello\r\n"
-
-        mocker.patch.object(fp, "smtp_probe", new=fake_smtp_probe)
+        mock_smtp_probe = mocker.patch.object(
+            fp, "smtp_probe", return_value="220 mail.example ESMTP\r\n250-Hello\r\n"
+        )
 
         monkeypatch.setitem(scanner.SERVICE_MAP, 2525, "smtp")
         pr_smtp = scanner.PortResult(port=2525, state="open")
@@ -309,52 +280,42 @@ class TestActiveProbeRouting:
         pr_smtps = scanner.PortResult(port=2465, state="open")
         fp.identify_service("127.0.0.1", pr_smtps, 0.1)
 
-        assert (2525, False) in calls
-        assert (2465, True) in calls
+        call_args_list = mock_smtp_probe.call_args_list
+        ports_and_ssl = [
+            (c[0][1], c.kwargs.get("use_ssl", c[0][4] if len(c[0]) > 4 else False))
+            for c in call_args_list
+        ]
+        assert (2525, False) in ports_and_ssl
+        assert (2465, True) in ports_and_ssl
 
     def test_smtp_probe_sends_starttls(self, mocker):
-        captured = {}
-
-        def fake_active_probe(*args, **kwargs):
-            captured["payloads"] = kwargs.get("payloads")
-            if captured["payloads"] is None and len(args) >= 4:
-                captured["payloads"] = args[3]
-            return "250-STARTTLS\r\n"
-
-        mocker.patch.object(pb, "active_probe", new=fake_active_probe)
+        mock_active_probe = mocker.patch.object(pb, "active_probe", return_value="250-STARTTLS\r\n")
         out = fp.smtp_probe("127.0.0.1", 25, 0.1, use_ssl=False)
         assert "STARTTLS" in out
-        assert captured["payloads"] == [b"EHLO netprobe.local\r\n", b"STARTTLS\r\n", b"QUIT\r\n"]
+        mock_active_probe.assert_called()
+        call_kwargs = mock_active_probe.call_args.kwargs
+        payloads = call_kwargs.get("payloads") or mock_active_probe.call_args[0][3]
+        assert payloads == [b"EHLO netprobe.local\r\n", b"STARTTLS\r\n", b"QUIT\r\n"]
 
     def test_redis_probe_sends_info_payload(self, mocker):
-        captured = {}
-
-        def fake_active_probe(*args, **kwargs):
-            captured["payloads"] = kwargs.get("payloads")
-            if captured["payloads"] is None and len(args) >= 4:
-                captured["payloads"] = args[3]
-            return "redis_version:7.0.0"
-
-        mocker.patch.object(pb, "active_probe", new=fake_active_probe)
+        mock_active_probe = mocker.patch.object(pb, "active_probe", return_value="redis_version:7.0.0")
         out = fp.redis_probe("127.0.0.1", 6379, 0.1)
 
         assert out == "redis_version:7.0.0"
-        assert captured["payloads"] == [b"INFO\r\n"]
+        mock_active_probe.assert_called()
+        call_kwargs = mock_active_probe.call_args.kwargs
+        payloads = call_kwargs.get("payloads") or mock_active_probe.call_args[0][3]
+        assert payloads == [b"INFO\r\n"]
 
     def test_memcached_probe_sends_version_quit(self, mocker):
-        captured = {}
-
-        def fake_active_probe(*args, **kwargs):
-            captured["payloads"] = kwargs.get("payloads")
-            if captured["payloads"] is None and len(args) >= 4:
-                captured["payloads"] = args[3]
-            return "VERSION 1.6.21"
-
-        mocker.patch.object(pb, "active_probe", new=fake_active_probe)
+        mock_active_probe = mocker.patch.object(pb, "active_probe", return_value="VERSION 1.6.21")
         out = fp.memcached_probe("127.0.0.1", 11211, 0.1)
 
         assert out == "VERSION 1.6.21"
-        assert captured["payloads"] == [b"version\r\n", b"quit\r\n"]
+        mock_active_probe.assert_called()
+        call_kwargs = mock_active_probe.call_args.kwargs
+        payloads = call_kwargs.get("payloads") or mock_active_probe.call_args[0][3]
+        assert payloads == [b"version\r\n", b"quit\r\n"]
 
     def test_mysql_probe_extracts_version_handshake(self, mocker):
         server_ver = b"8.0.36"
@@ -381,51 +342,34 @@ class TestActiveProbeRouting:
         assert "MariaDB" in out
 
     def test_mssql_packet_header_length_matches_payload(self, mocker):
-        captured = {}
-
-        def fake_active_probe(*args, **kwargs):
-            payloads = kwargs.get("payloads")
-            if payloads is None and len(args) >= 4:
-                payloads = args[3]
-            captured["packet"] = payloads[0]
-            return b""
-
-        mocker.patch.object(pb, "active_probe", new=fake_active_probe)
+        mock_active_probe = mocker.patch.object(pb, "active_probe", return_value=b"")
         fp.mssql_probe("127.0.0.1", 1433, 0.1)
 
-        pkt = captured["packet"]
+        mock_active_probe.assert_called()
+        call_kwargs = mock_active_probe.call_args.kwargs
+        payloads = call_kwargs.get("payloads") or mock_active_probe.call_args[0][3]
+        pkt = payloads[0]
         declared = int.from_bytes(pkt[2:4], "big")
         assert declared == len(pkt)
 
-    def test_mssql_probe_extracts_prelogin_version(self, mocker):
-        # TDS header (8 bytes) + PRELOGIN option table with VERSION token.
-        # VERSION token data: major=15, minor=0, build=2000.
+    @pytest.mark.parametrize("packet_type_byte,expected_in,expected_not_in", [
+        (0x04, "MSSQL prelogin version=15.0.2000", None),
+        (0x12, "MSSQL TDS response type=0x12", "prelogin version="),
+    ])
+    def test_mssql_probe_version_parsing(self, mocker, packet_type_byte, expected_in, expected_not_in):
         payload = (
             b"\x00\x00\x00\x00\x06"  # token 0x00, offset 0, len 6
             + b"\xff"  # terminator
             + b"\x0f\x00\x07\xd0\x00\x00"  # 15.0.2000 + subbuild
         )
         packet_len = 8 + len(payload)
-        resp = b"\x04\x01" + packet_len.to_bytes(2, "big") + b"\x00\x00\x01\x00" + payload
+        resp = bytes([packet_type_byte, 0x01]) + packet_len.to_bytes(2, "big") + b"\x00\x00\x01\x00" + payload
 
-        mocker.patch.object(pb, "active_probe", new=lambda *args, **kwargs: resp)
+        mocker.patch.object(pb, "active_probe", return_value=resp)
         out = fp.mssql_probe("127.0.0.1", 1433, 0.1)
-        assert "MSSQL prelogin version=15.0.2000" in out
-
-    def test_mssql_probe_no_version_non_prelogin(self, mocker):
-        payload = (
-            b"\x00\x00\x00\x00\x06"
-            + b"\xff"
-            + b"\x0f\x00\x07\xd0\x00\x00"
-        )
-        packet_len = 8 + len(payload)
-        # packet type 0x12 (not prelogin token packet)
-        resp = b"\x12\x01" + packet_len.to_bytes(2, "big") + b"\x00\x00\x01\x00" + payload
-
-        mocker.patch.object(pb, "active_probe", new=lambda *args, **kwargs: resp)
-        out = fp.mssql_probe("127.0.0.1", 1433, 0.1)
-        assert "prelogin version=" not in out
-        assert "MSSQL TDS response type=0x12" in out
+        assert expected_in in out
+        if expected_not_in is not None:
+            assert expected_not_in not in out
 
     def test_postgresql_probe_parses_auth_request(self, mocker):
         calls = {"n": 0}
@@ -445,7 +389,7 @@ class TestActiveProbeRouting:
     def test_oracle_probe_extracts_tnslsnr_version(self, mocker):
         payload = b"TNSLSNR for Linux: Version 19.0.0.0.0"
         raw = b"\x00\x30\x00\x00\x02" + payload  # packet type=ACCEPT
-        mocker.patch.object(pb, "active_probe", new=lambda *args, **kwargs: raw)
+        mocker.patch.object(pb, "active_probe", return_value=raw)
         out = fp.oracle_probe("127.0.0.1", 1521, 0.1)
         assert "Oracle TNS" in out
         assert "version=19.0.0.0.0" in out
@@ -476,7 +420,11 @@ class TestActiveProbeRouting:
         assert ver == "7.0.8"
         assert wire == 21
 
-    def test_extract_smb2_dialect_decodes_smb3_1_1(self):
+    @pytest.mark.parametrize("dialect_code,expected_version", [
+        (0x0311, "3.1.1"),
+        (0x0210, "2.1"),
+    ])
+    def test_extract_smb2_dialect(self, dialect_code, expected_version):
         header = struct.pack(
             "<4sHHIHHIIQIIQ16s",
             b"\xfeSMB",
@@ -493,31 +441,82 @@ class TestActiveProbeRouting:
             0,
             b"\x00" * 16,
         )
-        body = struct.pack("<HHHH", 65, 1, 0x0311, 0) + (b"\x00" * 32)
+        body = struct.pack("<HHHH", 65, 1, dialect_code, 0) + (b"\x00" * 32)
         resp = b"\x00\x00\x00\x00" + header + body
-        assert probes_smb._extract_smb2_dialect(resp) == "3.1.1"
+        assert probes_smb._extract_smb2_dialect(resp) == expected_version
 
-    def test_extract_smb2_dialect_decodes_smb2_1(self):
-        header = struct.pack(
-            "<4sHHIHHIIQIIQ16s",
-            b"\xfeSMB",
-            64,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            1,
-            0,
-            0,
-            0,
-            b"\x00" * 16,
-        )
-        body = struct.pack("<HHHH", 65, 1, 0x0210, 0) + (b"\x00" * 32)
-        resp = b"\x00\x00\x00\x00" + header + body
-        assert probes_smb._extract_smb2_dialect(resp) == "2.1"
-
+    @pytest.mark.parametrize("service,probe_attr,port,probe_return_value,expected_service,expected_version", [
+        ("dns", "dns_probe", 10530,
+         "DNS fingerprint product=Unbound version=1.19.3 confidence=high transport=udp+tcp",
+         "dns", "Unbound 1.19.3"),
+        ("dns", "dns_probe", 10531,
+         "DNS fingerprint product=unknown confidence=low transport=tcp",
+         "dns", "DNS"),
+        ("ssh", "ssh_probe", 2223,
+         "SSH-2.0-OpenSSH",
+         "ssh", "OpenSSH 2.0"),
+        ("mqtt", "mqtt_probe", 1884,
+         "MQTT server ready",
+         "mqtt", "MQTT"),
+        ("mongodb", "mongodb_probe", 47018,
+         "MongoDB hello version=7.0.8 maxWireVersion=21",
+         "mongodb", "MongoDB 7.0.8"),
+        ("snmp", "snmp_probe", 10162,
+         "SNMP response version=v2c sysDescr=Linux test-host",
+         "snmp", "SNMP v2c"),
+        ("ntp", "ntp_probe", 10123,
+         "NTP response version=4 mode=4 stratum=2",
+         "ntp", "NTP v4"),
+        ("mssql", "mssql_probe", 41434,
+         "MSSQL prelogin version=15.0.2000 type=0x04 len=57",
+         "mssql", "MSSQL 15.0.2000"),
+        ("postgresql", "postgresql_probe", 55433,
+         "SSLRequestResponse:S PostgreSQL auth request type=3",
+         "postgresql", "PostgreSQL auth=3"),
+        ("oracle", "oracle_probe", 11521,
+         "Oracle TNS type=ACCEPT version=19.0.0.0.0",
+         "oracle", "Oracle TNS 19.0.0.0.0"),
+        ("smb", "smb_probe", 44445,
+         "",
+         "smb", "SMB"),
+        ("smb", "smb_probe", 44446,
+         "SMB 3.1.1 Samba 4.18.5",
+         "smb", "Samba 4.18.5"),
+        ("ssh", "ssh_probe", 2224,
+         "SSH-2.0-OpenSSH",
+         "ssh", "OpenSSH 2.0"),
+        ("http", "http_probe", 18080,
+         "HTTP/1.1 200 OK\r\nServer: test\r\n\r\n",
+         "http", "HTTP 1.1"),
+        ("ldap", "ldap_probe", 40390,
+         "LDAP rootDSE response supportedLDAPVersion: 3 defaultNamingContext DC=corp,DC=local",
+         "ldap", "LDAP 3"),
+        ("imap", "imap_probe", 40391,
+         "* OK Dovecot ready. 2.3.18",
+         "imap", None),
+        ("winrm", "winrm_probe", 45986,
+         "HTTP/1.1 401 Unauthorized\r\nServer: Microsoft-HTTPAPI/2.0\r\n\r\n",
+         "winrm", "WinRM"),
+        ("winrm", "winrm_probe", 45987,
+         "WSMAN 3.0\r\nHTTP/1.1 401 Unauthorized\r\nServer: Microsoft-HTTPAPI/2.0\r\n\r\n",
+         "winrm", "WinRM"),
+        ("winrm", "winrm_probe", 45988,
+         "WINRM-VERSION:3.0\r\nHTTP/1.1 401 Unauthorized\r\n",
+         "winrm", "WinRM 3.0"),
+    ])
+    def test_identify_service(self, mocker, monkeypatch, service, probe_attr, port, probe_return_value, expected_service, expected_version):
+        monkeypatch.setitem(scanner.SERVICE_MAP, port, service)
+        mocker.patch.object(fp, probe_attr, return_value=probe_return_value)
+        if service == "smb" and probe_return_value == "":
+            mocker.patch.object(fp, "grab_banner", return_value="")
+        pr = scanner.PortResult(port=port, state="open")
+        fp.identify_service("127.0.0.1", pr, 0.1)
+        assert pr.service == expected_service
+        if expected_version is not None:
+            if service == "imap":
+                assert pr.version.startswith("Dovecot")
+            else:
+                assert pr.version == expected_version
 
     def test_identify_service_routes_clustered(self, mocker, monkeypatch):
         calls = []
@@ -548,226 +547,6 @@ class TestActiveProbeRouting:
         for service, _, port, _ in routes:
             fp.identify_service("127.0.0.1", scanner.PortResult(port=port, state="open"), 0.1)
             assert service in calls
-
-    def test_identify_service_dns_product_version_fingerprint(self, mocker, monkeypatch):
-        port = 10530
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "dns")
-        mocker.patch.object(
-            fp,
-            "dns_probe",
-            new=lambda *args, **kwargs: "DNS fingerprint product=Unbound version=1.19.3 confidence=high transport=udp+tcp",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "dns"
-        assert pr.version == "Unbound 1.19.3"
-
-    def test_identify_service_dns_unknown_product_fingerprint(self, mocker, monkeypatch):
-        port = 10531
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "dns")
-        mocker.patch.object(
-            fp,
-            "dns_probe",
-            new=lambda *args, **kwargs: "DNS fingerprint product=unknown confidence=low transport=tcp",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "dns"
-        assert pr.version == "DNS"
-
-    def test_identify_service_central_fallback_no_version(self, mocker, monkeypatch):
-        port = 2223
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "ssh")
-        mocker.patch.object(fp, "ssh_probe", new=lambda *args, **kwargs: "SSH-2.0-OpenSSH")
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "ssh"
-        assert pr.version == "OpenSSH 2.0"
-
-    def test_identify_service_central_product_fallback_protocol(self, mocker, monkeypatch):
-        port = 1884
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "mqtt")
-        mocker.patch.object(fp, "mqtt_probe", new=lambda *args, **kwargs: "MQTT server ready")
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "mqtt"
-        assert pr.version == "MQTT"
-
-    def test_identify_service_mongodb_version_hello(self, mocker, monkeypatch):
-        port = 47018
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "mongodb")
-        mocker.patch.object(
-            fp,
-            "mongodb_probe",
-            new=lambda *args, **kwargs: "MongoDB hello version=7.0.8 maxWireVersion=21",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "mongodb"
-        assert pr.version == "MongoDB 7.0.8"
-
-    def test_identify_service_snmp_protocol_version(self, mocker, monkeypatch):
-        port = 10162
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "snmp")
-        mocker.patch.object(
-            fp,
-            "snmp_probe",
-            new=lambda *args, **kwargs: "SNMP response version=v2c sysDescr=Linux test-host",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "snmp"
-        assert pr.version == "SNMP v2c"
-
-    def test_identify_service_ntp_protocol_version(self, mocker, monkeypatch):
-        port = 10123
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "ntp")
-        mocker.patch.object(
-            fp,
-            "ntp_probe",
-            new=lambda *args, **kwargs: "NTP response version=4 mode=4 stratum=2",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "ntp"
-        assert pr.version == "NTP v4"
-
-    def test_identify_service_mssql_prelogin_version(self, mocker, monkeypatch):
-        port = 41434
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "mssql")
-        mocker.patch.object(
-            fp,
-            "mssql_probe",
-            new=lambda *args, **kwargs: "MSSQL prelogin version=15.0.2000 type=0x04 len=57",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "mssql"
-        assert pr.version == "MSSQL 15.0.2000"
-
-    def test_identify_service_postgresql_auth_hint(self, mocker, monkeypatch):
-        port = 55433
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "postgresql")
-        mocker.patch.object(
-            fp,
-            "postgresql_probe",
-            new=lambda *args, **kwargs: "SSLRequestResponse:S PostgreSQL auth request type=3",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "postgresql"
-        assert pr.version == "PostgreSQL auth=3"
-
-    def test_identify_service_oracle_tns_version(self, mocker, monkeypatch):
-        port = 11521
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "oracle")
-        mocker.patch.object(
-            fp,
-            "oracle_probe",
-            new=lambda *args, **kwargs: "Oracle TNS type=ACCEPT version=19.0.0.0.0",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "oracle"
-        assert pr.version == "Oracle TNS 19.0.0.0.0"
-
-    def test_identify_service_smb_version_label_no_banner(self, mocker, monkeypatch):
-        port = 44445
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "smb")
-        mocker.patch.object(fp, "smb_probe", new=lambda *args, **kwargs: "")
-        mocker.patch.object(fp, "grab_banner", new=lambda *args, **kwargs: "")
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "smb"
-        assert pr.version == "SMB"
-
-    def test_identify_service_samba_product_smb(self, mocker, monkeypatch):
-        port = 44446
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "smb")
-        mocker.patch.object(fp, "smb_probe", new=lambda *args, **kwargs: "SMB 3.1.1 Samba 4.18.5")
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "smb"
-        assert pr.version == "Samba 4.18.5"
-
-    def test_identify_service_appends_protocol_version_no_number(self, mocker, monkeypatch):
-        port = 2224
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "ssh")
-        mocker.patch.object(fp, "ssh_probe", new=lambda *args, **kwargs: "SSH-2.0-OpenSSH")
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "ssh"
-        assert pr.version == "OpenSSH 2.0"
-
-    def test_identify_service_fallback_service_protocol_number(self, mocker, monkeypatch):
-        port = 18080
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "http")
-        mocker.patch.object(fp, "http_probe", new=lambda *args, **kwargs: "HTTP/1.1 200 OK\r\nServer: test\r\n\r\n")
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "http"
-        assert pr.version == "HTTP 1.1"
-
-    def test_identify_service_ldap_protocol_version(self, mocker, monkeypatch):
-        port = 40390
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "ldap")
-        mocker.patch.object(
-            fp,
-            "ldap_probe",
-            new=lambda *args, **kwargs: "LDAP rootDSE response supportedLDAPVersion: 3 defaultNamingContext DC=corp,DC=local",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "ldap"
-        assert pr.version == "LDAP 3"
-
-    def test_identify_service_dovecot_imap(self, mocker, monkeypatch):
-        port = 40391
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "imap")
-        mocker.patch.object(fp, "imap_probe", new=lambda *args, **kwargs: "* OK Dovecot ready. 2.3.18")
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "imap"
-        assert pr.version.startswith("Dovecot")
-
-    def test_identify_service_winrm_httpapi_version(self, mocker, monkeypatch):
-        port = 45986
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "winrm")
-        mocker.patch.object(
-            fp,
-            "winrm_probe",
-            new=lambda *args, **kwargs: "HTTP/1.1 401 Unauthorized\r\nServer: Microsoft-HTTPAPI/2.0\r\n\r\n",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "winrm"
-        assert pr.version == "WinRM"
-
-    def test_identify_service_ignores_wsman_winrm(self, mocker, monkeypatch):
-        port = 45987
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "winrm")
-        mocker.patch.object(
-            fp,
-            "winrm_probe",
-            new=lambda *args, **kwargs: "WSMAN 3.0\r\nHTTP/1.1 401 Unauthorized\r\nServer: Microsoft-HTTPAPI/2.0\r\n\r\n",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "winrm"
-        assert pr.version == "WinRM"
-
-    def test_identify_service_explicit_winrm_version_token(self, mocker, monkeypatch):
-        port = 45988
-        monkeypatch.setitem(scanner.SERVICE_MAP, port, "winrm")
-        mocker.patch.object(
-            fp,
-            "winrm_probe",
-            new=lambda *args, **kwargs: "WINRM-VERSION:3.0\r\nHTTP/1.1 401 Unauthorized\r\n",
-        )
-        pr = scanner.PortResult(port=port, state="open")
-        fp.identify_service("127.0.0.1", pr, 0.1)
-        assert pr.service == "winrm"
-        assert pr.version == "WinRM 3.0"
 
 
 class TestHttpHeaderChecks:
@@ -816,7 +595,7 @@ class TestFtpChecks:
             def sendall(self, data):
                 self.sent.append(data)
 
-        mocker.patch.object(vc.socket, "socket", new=lambda *args, **kwargs: FakeSock())
+        mocker.patch.object(vc.socket, "socket", return_value=FakeSock())
         vuln = vc.check_anonymous_ftp("127.0.0.1", 21, 0.1)
         assert vuln is not None
         assert vuln.title == "Anonymous FTP Login Allowed"
@@ -861,8 +640,8 @@ class TestSslChecks:
                 _ = raw, server_hostname
                 return FakeTlsSock()
 
-        mocker.patch.object(vc.socket, "socket", new=lambda *args, **kwargs: FakeRawSock())
-        mocker.patch.object(vc.ssl, "create_default_context", new=lambda: FakeCtx())
+        mocker.patch.object(vc.socket, "socket", return_value=FakeRawSock())
+        mocker.patch.object(vc.ssl, "create_default_context", return_value=FakeCtx())
 
         out = vc.check_ssl_issues("2001:db8::1", 443, 0.1, af=vc.socket.AF_INET6)
         assert isinstance(out, list)

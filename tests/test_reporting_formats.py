@@ -1,6 +1,8 @@
 import csv
 import json
 
+import pytest
+
 from netprobe.models import PortResult, ScanReport, Vulnerability
 import netprobe.reporting as reporting
 
@@ -19,75 +21,76 @@ def _sample_report() -> ScanReport:
     return report
 
 
-def test_render_text_report_expected_sections():
-    text = reporting.render_text_report(_sample_report())
-    assert "SCAN REPORT:" in text
-    assert "PORT" in text
-    assert "VULNERABILITIES" in text
-    assert "SUMMARY:" in text
-    assert "OS Version:" not in text
+@pytest.mark.parametrize("render_fn,expected_sections,absent_section", [
+    (
+        reporting.render_text_report,
+        ["SCAN REPORT:", "PORT", "VULNERABILITIES", "SUMMARY:"],
+        "OS Version:",
+    ),
+    (
+        reporting.render_markdown_report,
+        ["# Scan Report:", "## Open Ports", "## Vulnerabilities", "## Summary"],
+        "- OS Version:",
+    ),
+])
+def test_render_report_expected_sections(render_fn, expected_sections, absent_section):
+    out = render_fn(_sample_report())
+    for section in expected_sections:
+        assert section in out
+    assert absent_section not in out
 
 
-def test_render_markdown_report_expected_sections():
-    md = reporting.render_markdown_report(_sample_report())
-    assert "# Scan Report:" in md
-    assert "## Open Ports" in md
-    assert "## Vulnerabilities" in md
-    assert "## Summary" in md
-    assert "- OS Version:" not in md
-
-
-def test_render_reports_include_os_version():
+@pytest.mark.parametrize("render_fn,expected_str", [
+    (reporting.render_text_report, "OS Version: Windows Server 2019"),
+    (reporting.render_markdown_report, "- OS Version: `Windows Server 2019`"),
+])
+def test_render_reports_include_os_version(render_fn, expected_str):
     report = _sample_report()
     report.os_version = "Windows Server 2019"
-    text = reporting.render_text_report(report)
-    md = reporting.render_markdown_report(report)
-    assert "OS Version: Windows Server 2019" in text
-    assert "- OS Version: `Windows Server 2019`" in md
+    assert expected_str in render_fn(report)
 
 
-def test_render_reports_hide_os_confidence_evidence_default():
+@pytest.mark.parametrize("render_fn,show,present", [
+    (reporting.render_text_report, False, False),
+    (reporting.render_markdown_report, False, False),
+    (reporting.render_text_report, True, True),
+    (reporting.render_markdown_report, True, True),
+])
+def test_render_reports_os_confidence_evidence_visibility(render_fn, show, present):
     report = _sample_report()
     report.os_confidence = "high"
     report.os_evidence = ["Found IIS marker", "Found RDP marker"]
-    text = reporting.render_text_report(report)
-    md = reporting.render_markdown_report(report)
-    assert "OS Confidence:" not in text
-    assert "OS Evidence:" not in text
-    assert "- OS Confidence:" not in md
-    assert "- OS Evidence:" not in md
+    if show:
+        report.show_os_confidence = True
+        report.show_os_evidence = True
+    out = render_fn(report)
+    is_md = render_fn is reporting.render_markdown_report
+    confidence_marker = "- OS Confidence:" if is_md else "OS Confidence:"
+    evidence_marker = "- OS Evidence:" if is_md else "OS Evidence:"
+    if present:
+        assert confidence_marker in out
+        assert evidence_marker in out
+        if not is_md:
+            assert "OS Confidence: high" in out
+            assert "- Found IIS marker" in out
+        else:
+            assert "- OS Confidence: `high`" in out
+    else:
+        assert confidence_marker not in out
+        assert evidence_marker not in out
 
 
-def test_render_reports_include_os_confidence_evidence_enabled():
+@pytest.mark.parametrize("save_fn,filename", [
+    (reporting.save_text_report, "r.txt"),
+    (reporting.save_markdown_report, "r.md"),
+    (reporting.save_json_report, "r.json"),
+    (reporting.save_csv_report, "r.csv"),
+])
+def test_save_reports_create_parent_dir(tmp_path, save_fn, filename):
     report = _sample_report()
-    report.os_confidence = "high"
-    report.os_evidence = ["Found IIS marker", "Found RDP marker"]
-    report.show_os_confidence = True
-    report.show_os_evidence = True
-    text = reporting.render_text_report(report)
-    md = reporting.render_markdown_report(report)
-    assert "OS Confidence: high" in text
-    assert "OS Evidence:" in text
-    assert "- Found IIS marker" in text
-    assert "- OS Confidence: `high`" in md
-    assert "- OS Evidence:" in md
-
-
-def test_save_reports_create_parent_dir(tmp_path):
-    report = _sample_report()
-    base = tmp_path / "_tmp_out_dir"
-    txt = base / "sub" / "r.txt"
-    md = base / "sub" / "r.md"
-    js = base / "sub" / "r.json"
-    csv = base / "sub" / "r.csv"
-    reporting.save_text_report(report, str(txt))
-    reporting.save_markdown_report(report, str(md))
-    reporting.save_json_report(report, str(js))
-    reporting.save_csv_report(report, str(csv))
-    assert txt.exists()
-    assert md.exists()
-    assert js.exists()
-    assert csv.exists()
+    out = tmp_path / "_tmp_out_dir" / "sub" / filename
+    save_fn(report, str(out))
+    assert out.exists()
 
 
 def test_save_json_report_invalid_finding_type_fallback(tmp_path):

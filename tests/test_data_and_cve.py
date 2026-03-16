@@ -2,6 +2,8 @@ import json
 import urllib.parse
 from pathlib import Path
 
+import pytest
+
 import netprobe.cve_db as cve
 import netprobe.signatures as sig
 
@@ -91,7 +93,11 @@ def test_load_fingerprint_db_json(tmp_path):
     assert db["http_check_services"]["plain"] == ["http"]
 
 
-def test_correlate_cves_with_version_range():
+@pytest.mark.parametrize("version_str,expected_count", [
+    ("Apache 2.4.49", 1),
+    ("Apache 2.4.51", 0),
+])
+def test_correlate_cves_version_range(version_str, expected_count):
     entries = [
         {
             "cve_id": "CVE-2024-0001",
@@ -105,14 +111,17 @@ def test_correlate_cves_with_version_range():
             "version_end_excluding": "2.4.50",
         }
     ]
-    hits = cve.correlate_cves("http", "Apache 2.4.49", entries)
-    misses = cve.correlate_cves("http", "Apache 2.4.51", entries)
-    assert len(hits) == 1
-    assert hits[0]["cve_id"] == "CVE-2024-0001"
-    assert misses == []
+    result = cve.correlate_cves("http", version_str, entries)
+    assert len(result) == expected_count
+    if expected_count == 1:
+        assert result[0]["cve_id"] == "CVE-2024-0001"
 
 
-def test_correlate_cves_exact_cpe_version():
+@pytest.mark.parametrize("version_str,expected_match", [
+    ("nginx 1.20.0", True),
+    ("nginx 1.20.1", False),
+])
+def test_correlate_cves_exact_cpe_version(version_str, expected_match):
     entries = [
         {
             "cve_id": "CVE-2024-0002",
@@ -126,8 +135,11 @@ def test_correlate_cves_exact_cpe_version():
             "version_end_excluding": None,
         }
     ]
-    assert cve.correlate_cves("nginx", "nginx 1.20.0", entries)
-    assert cve.correlate_cves("nginx", "nginx 1.20.1", entries) == []
+    result = cve.correlate_cves("nginx", version_str, entries)
+    if expected_match:
+        assert result
+    else:
+        assert result == []
 
 
 def test_correlate_cves_https_aliases_http():
@@ -165,7 +177,11 @@ def test_correlate_cves_ignores_cross_product_noise():
     assert cve.correlate_cves("http", "Apache 2.4.7", entries) == []
 
 
-def test_correlate_cves_remote_only_filters_client_side():
+@pytest.mark.parametrize("cve_policy,expected_count", [
+    ("remote-only", 0),
+    ("broad", 1),
+])
+def test_correlate_cves_policy(cve_policy, expected_count):
     entries = [
         {
             "cve_id": "CVE-TEST-CLIENT",
@@ -183,27 +199,22 @@ def test_correlate_cves_remote_only_filters_client_side():
             "vector": "CVSS:3.1/AV:N/PR:N/UI:N",
         }
     ]
-    assert cve.correlate_cves("ssh", "OpenSSH 6.6.1p1", entries, cve_policy="remote-only") == []
-    assert len(cve.correlate_cves("ssh", "OpenSSH 6.6.1p1", entries, cve_policy="broad")) == 1
+    result = cve.correlate_cves("ssh", "OpenSSH 6.6.1p1", entries, cve_policy=cve_policy)
+    assert len(result) == expected_count
 
 
 async def test_refresh_cve_cache_async_reports_partial_failures(mocker, tmp_path):
-    calls = {"warned": False}
-
     def fake_fetch(keyword, results_per_page=200, api_key=None):
         if keyword == "openssh":
             raise RuntimeError("boom")
         return []
 
-    class FakeLogger:
-        def warning(self, *args, **kwargs):
-            calls["warned"] = True
-
     mocker.patch.object(cve, "fetch_nvd_cves", new=fake_fetch)
-    mocker.patch.object(cve, "get_logger", new=lambda: FakeLogger())
+    mock_logger = mocker.MagicMock()
+    mocker.patch.object(cve, "get_logger", return_value=mock_logger)
     out = await cve.refresh_cve_cache_async(str(tmp_path / "_tmp_cve_cache.json"), services=["ssh", "http"])
     assert out == []
-    assert calls["warned"] is True
+    mock_logger.warning.assert_called()
 
 
 async def test_refresh_cve_cache_async_preserves_cache_empty_refresh(mocker, tmp_path):
@@ -235,15 +246,17 @@ async def test_refresh_cve_cache_async_preserves_cache_empty_refresh(mocker, tmp
     assert out[0]["cve_id"] == "CVE-TEST-KEEP"
 
 
-def test_should_refresh_cve_cache_clustered(tmp_path):
-    missing_cache = tmp_path / "_tmp_refresh_cache.json"
-    assert cve.should_refresh_cve_cache(str(missing_cache), interval_hours=24.0) is True
-
-    cases = [
-        ("_tmp_stale_cache.json", "2000-01-01T00:00:00+00:00", True),
-        ("_tmp_recent_cache.json", "2999-01-01T00:00:00+00:00", False),
-    ]
-    for name, fetched_at, expected in cases:
+@pytest.mark.parametrize("fetched_at,expected", [
+    (None, True),
+    ("2000-01-01T00:00:00+00:00", True),
+    ("2999-01-01T00:00:00+00:00", False),
+])
+def test_should_refresh_cve_cache(tmp_path, fetched_at, expected):
+    if fetched_at is None:
+        cache_file = tmp_path / "_tmp_refresh_cache_missing.json"
+        assert cve.should_refresh_cve_cache(str(cache_file), interval_hours=24.0) is True
+    else:
+        name = "_tmp_stale_cache.json" if expected else "_tmp_recent_cache.json"
         cache_file = tmp_path / name
         payload = {"fetched_at": fetched_at, "entries": []}
         cache_file.write_text(json.dumps(payload), encoding="utf-8")
@@ -342,17 +355,12 @@ def test_correlate_cves_prefers_product_version():
 
 
 def test_refresh_cve_cache_dedupes_alias_services(mocker, tmp_path):
-    calls = []
-
-    def fake_fetch(keyword, results_per_page=200, api_key=None):
-        calls.append(keyword)
-        return []
-
-    mocker.patch.object(cve, "fetch_nvd_cves", new=fake_fetch)
+    mock_fetch = mocker.patch.object(cve, "fetch_nvd_cves", return_value=[])
     out = cve.refresh_cve_cache(str(tmp_path / "_tmp_cve_cache.json"), services=["http", "https"])
     assert out == []
     # https aliases to http; should only fetch apache once.
-    assert calls == ["apache"]
+    called_keywords = [call[0][0] for call in mock_fetch.call_args_list]
+    assert called_keywords == ["apache"]
 
 
 def test_correlate_cves_canonical_alias_entries():
